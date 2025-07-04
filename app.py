@@ -1,51 +1,43 @@
 import streamlit as st
-import whisper
 from transformers import pipeline
 import tempfile
-import os
 
-# Load models once
+# Load Whisper ASR model from HuggingFace
 @st.cache_resource
-def load_models():
-    whisper_model = whisper.load_model("base")
-    summarizer_model = pipeline("summarization", model="facebook/bart-large-cnn")
-    return whisper_model, summarizer_model
+def load_model():
+    return pipeline("automatic-speech-recognition", model="openai/whisper-small")
 
-st.title("🎤 AI Meeting Summarizer")
+asr_pipeline = load_model()
 
-uploaded_file = st.file_uploader("Upload meeting audio (.mp3, .wav)", type=["mp3", "wav"])
+st.title("🎙️ AI Meeting Summarizer")
 
-if uploaded_file:
-    st.audio(uploaded_file)
+uploaded_file = st.file_uploader("Upload an audio file (.mp3, .wav)", type=["mp3", "wav"])
 
-    with st.spinner("Transcribing audio..."):
-        temp_audio = tempfile.NamedTemporaryFile(delete=False)
+if uploaded_file is not None:
+    with tempfile.NamedTemporaryFile(delete=False) as temp_audio:
         temp_audio.write(uploaded_file.read())
-        temp_audio.close()
+        temp_audio_path = temp_audio.name
 
-        whisper_model, summarizer_model = load_models()
-
-        result = whisper_model.transcribe(temp_audio.name)
+    with st.spinner("Transcribing..."):
+        result = asr_pipeline(temp_audio_path)
         transcript = result["text"]
+        st.subheader("Transcript:")
+        st.write(transcript)
 
-    st.subheader("📝 Transcript")
-    st.write(transcript)
+        # Summarize
+        with st.spinner("Summarizing..."):
+            from transformers import pipeline as summary_pipeline
+            summarizer = summary_pipeline("summarization", model="sshleifer/distilbart-cnn-12-6")
 
-    with st.spinner("Summarizing..."):
-        summary = summarizer_model(transcript, max_length=130, min_length=30, do_sample=False)
-        st.subheader("📄 Summary")
-        st.write(summary[0]['summary_text'])
+            # Split if transcript is too long
+            if len(transcript) > 1000:
+                chunks = [transcript[i:i+1000] for i in range(0, len(transcript), 1000)]
+                summary = ""
+                for chunk in chunks:
+                    summary_text = summarizer(chunk, max_length=130, min_length=30, do_sample=False)[0]['summary_text']
+                    summary += summary_text + " "
+            else:
+                summary = summarizer(transcript, max_length=130, min_length=30, do_sample=False)[0]['summary_text']
 
-    # Optional: Extract action items
-    st.subheader("✅ Action Items")
-    keywords = ["need to", "should", "must", "assign", "due", "deadline", "follow up"]
-    actions = [s for s in transcript.split(". ") if any(k in s.lower() for k in keywords)]
-
-    if actions:
-        for idx, item in enumerate(actions, 1):
-            st.write(f"{idx}. {item}")
-    else:
-        st.info("No clear action items found.")
-
-    # Clean up
-    os.remove(temp_audio.name)
+            st.subheader("📝 Summary:")
+            st.write(summary)
