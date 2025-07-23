@@ -1,43 +1,87 @@
 import streamlit as st
 from transformers import pipeline
+from pydub import AudioSegment
 import tempfile
+import datetime
+import time
 
-# Load Whisper ASR model from HuggingFace
+# ---- Audio chunking ----
+def split_audio(uploaded_file, chunk_length_ms=30000):
+    audio = AudioSegment.from_file(uploaded_file)
+    chunks = []
+    for i in range(0, len(audio), chunk_length_ms):
+        chunk = audio[i:i+chunk_length_ms]
+        temp_chunk = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
+        chunk.export(temp_chunk.name, format="wav")
+        chunks.append(temp_chunk.name)
+    return chunks
+
+def chunk_text(text, max_words=600):
+    words = text.split()
+    for i in range(0, len(words), max_words):
+        yield " ".join(words[i:i+max_words])
+
+# ---- Load models with cache ----
 @st.cache_resource
-def load_model():
+def load_asr_model():
     return pipeline("automatic-speech-recognition", model="openai/whisper-small")
 
-asr_pipeline = load_model()
+@st.cache_resource
+def load_summarizer_model():
+    return pipeline("summarization", model="facebook/bart-large-cnn")
 
-st.title("🎙️ AI Meeting Summarizer")
+# ---- Streamlit UI ----
+st.title("🤖 AI Meeting Summarizer")
 
-uploaded_file = st.file_uploader("Upload an audio file (.mp3, .wav)", type=["mp3", "wav"])
+st.markdown("### 📤 Upload audio file (.mp3 or .wav)")
+uploaded_file = st.file_uploader("Upload your audio file here", type=["mp3", "wav"])
 
-if uploaded_file is not None:
-    with tempfile.NamedTemporaryFile(delete=False) as temp_audio:
-        temp_audio.write(uploaded_file.read())
-        temp_audio_path = temp_audio.name
+if st.button("▶️ Process Audio", key="process_button"):
+    if not uploaded_file:
+        st.warning("⚠️ Please upload an audio file first!")
+        st.stop()
 
-    with st.spinner("Transcribing..."):
-        result = asr_pipeline(temp_audio_path)
-        transcript = result["text"]
-        st.subheader("Transcript:")
-        st.write(transcript)
+    st.markdown("---")
+    st.subheader("🌀 Phase 1: Splitting audio into chunks (30 sec)")
+    audio_chunks = split_audio(uploaded_file)
 
-        # Summarize
-        with st.spinner("Summarizing..."):
-            from transformers import pipeline as summary_pipeline
-            summarizer = summary_pipeline("summarization", model="sshleifer/distilbart-cnn-12-6")
+    asr_model = load_asr_model()
+    summarizer = load_summarizer_model()
 
-            # Split if transcript is too long
-            if len(transcript) > 1000:
-                chunks = [transcript[i:i+1000] for i in range(0, len(transcript), 1000)]
-                summary = ""
-                for chunk in chunks:
-                    summary_text = summarizer(chunk, max_length=130, min_length=30, do_sample=False)[0]['summary_text']
-                    summary += summary_text + " "
-            else:
-                summary = summarizer(transcript, max_length=130, min_length=30, do_sample=False)[0]['summary_text']
+    transcript = ""
+    summary = ""
 
-            st.subheader("📝 Summary:")
-            st.write(summary)
+    st.subheader("🔊 Phase 2: Transcribing audio")
+    progress_trans = st.progress(0)
+    for i, chunk in enumerate(audio_chunks):
+        result = asr_model(chunk)
+        transcript += result["text"] + " "
+        progress_trans.progress(int((i + 1) / len(audio_chunks) * 100))
+        time.sleep(0.1)
+
+    st.subheader("📡 Phase 3: Summarizing text")
+    progress_sum = st.progress(0)
+    chunks = list(chunk_text(transcript))
+    for i, chunk in enumerate(chunks):
+        sum_text = summarizer(chunk, max_length=150, min_length=30, do_sample=False)[0]["summary_text"]
+        summary += sum_text + " "
+        progress_sum.progress(int((i + 1) / len(chunks) * 100))
+        time.sleep(0.1)
+
+    st.markdown("---")
+    st.subheader("📜 Transcript")
+    st.text_area("Full Transcript", transcript, height=250)
+
+    st.subheader("📌 Summary")
+    st.text_area("Meeting Summary", summary, height=200)
+
+    st.download_button(
+        "📥 Download Transcript",
+        transcript,
+        file_name=f"transcript_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
+    )
+    st.download_button(
+        "📥 Download Summary",
+        summary,
+        file_name=f"summary_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
+    )
