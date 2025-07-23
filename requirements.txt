@@ -1,4 +1,5 @@
 streamlit
-transformers
+git+https://github.com/openai/whisper.git
 torch
-sentencepiece
+pydub
+numpy
